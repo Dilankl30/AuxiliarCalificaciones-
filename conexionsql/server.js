@@ -8,7 +8,7 @@ app.use(express.json());
 
 const dbConfig = {
   user: process.env.DB_USER || 'sa',
-  password: process.env.DB_PASSWORD || '123',
+  password: process.env.DB_PASSWORD || 'sql123',
   server: process.env.DB_SERVER || 'localhost',
   database: process.env.DB_NAME || 'AuxiliarCalificacionesDB',
   options: {
