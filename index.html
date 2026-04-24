@@ -553,6 +553,26 @@
         animation: slideUp 0.3s ease;
       }
 
+      .connection-banner {
+        position: fixed;
+        top: 12px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 2500;
+        min-width: 320px;
+        max-width: 90vw;
+        padding: 10px 14px;
+        border-radius: 10px;
+        color: white;
+        font-size: 13px;
+        font-weight: 600;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+      }
+      .connection-banner.info { background: #2563eb; }
+      .connection-banner.success { background: #16a34a; }
+      .connection-banner.warning { background: #d97706; }
+      .connection-banner.error { background: #dc2626; }
+
       .grid-2 {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -634,6 +654,8 @@
         Iniciando Entorno...
       </h3>
     </div>
+
+    <div id="connectionBanner" class="connection-banner info hidden"></div>
 
     <!-- LOGIN PAGE -->
     <div id="loginPage" class="login-container">
@@ -1451,6 +1473,30 @@
 
       let app, auth, db;
       let currentUserAuth = null;
+      const API_BASE_URL = "http://localhost:3000";
+
+      function updateConnectionBanner(type, message) {
+        const el = document.getElementById("connectionBanner");
+        if (!el) return;
+        el.className = `connection-banner ${type}`;
+        el.textContent = message;
+        el.classList.remove("hidden");
+      }
+
+      window.updateConnectionBanner = updateConnectionBanner;
+
+      async function checkSqlHealth() {
+        try {
+          const response = await fetch(`${API_BASE_URL}/api/health`);
+          const payload = await response.json();
+          if (!response.ok || !payload.ok) {
+            throw new Error(payload.error || "SQL Server no respondió correctamente");
+          }
+          return { ok: true, message: payload.message };
+        } catch (error) {
+          return { ok: false, message: error.message };
+        }
+      }
 
       // STATE GLOBAL
       const STATE = {
@@ -1490,6 +1536,93 @@
         },
       };
 
+      async function loadDataFromSqlApi() {
+        try {
+          const response = await fetch(`${API_BASE_URL}/api/bootstrap`);
+          const payload = await response.json();
+          if (!response.ok) {
+            throw new Error(payload.detalle || payload.error || "Error cargando bootstrap SQL");
+          }
+          const asignaturaById = new Map(
+            (payload.asignaturas || []).map((a) => [a.AsignaturaID, a.CodigoAsignatura]),
+          );
+
+          const gradesByStudent = {};
+          (payload.calificaciones || []).forEach((c) => {
+            if (!gradesByStudent[c.EstudianteID]) gradesByStudent[c.EstudianteID] = {};
+            const code = asignaturaById.get(c.AsignaturaID);
+            if (code) {
+              gradesByStudent[c.EstudianteID][code] = {
+                acd: Number(c.ACD || 0),
+                apex: Number(c.APEX || 0),
+                aaut: Number(c.AAUT || 0),
+              };
+            }
+          });
+
+          const groupedMapa = new Map();
+          (payload.mapaCurricular || []).forEach((m) => {
+            if (!groupedMapa.has(m.RACarreraID)) {
+              groupedMapa.set(m.RACarreraID, {
+                raCarreraId: m.RACarreraID,
+                raCarrera: (payload.raCarrera || []).find((r) => r.RACarreraID === m.RACarreraID)?.CodigoRA || "",
+                asignaturas: {},
+              });
+            }
+            groupedMapa.get(m.RACarreraID).asignaturas[m.CodigoAsignatura] = m.NivelAportacion;
+          });
+
+          STATE.raCarrera = (payload.raCarrera || []).map((r) => ({
+            id: r.RACarreraID,
+            code: r.CodigoRA,
+            desc: r.Descripcion,
+            level: r.NivelEstrategico,
+            area: r.AreaDeConocimiento,
+          }));
+
+          STATE.docentes = (payload.usuarios || []).map((u) => ({
+            id: u.UsuarioID,
+            code: u.CodigoDocente,
+            name: u.NombreCompleto,
+            email: u.Email,
+            title: u.TituloAcademico,
+            role: u.Rol,
+          }));
+
+          STATE.asignaturas = (payload.asignaturas || []).map((a) => ({
+            id: a.AsignaturaID,
+            code: a.CodigoAsignatura,
+            name: a.NombreAsignatura,
+            docente: a.DocenteNombre || "Sin Asignar",
+            credits: a.Creditos,
+          }));
+
+          STATE.mapaCurricular = Array.from(groupedMapa.values());
+
+          STATE.estudiantes = (payload.estudiantes || []).map((e) => ({
+            id: e.EstudianteID,
+            cedula: e.Cedula,
+            name: e.NombreCompleto,
+            grades: gradesByStudent[e.EstudianteID] || {},
+          }));
+
+          STATE.parametros = {
+            notaMinima: Number(payload.parametros?.NotaMinimaAprobatoria || 7),
+            acd: Number(payload.parametros?.PesoACD || 35),
+            apex: Number(payload.parametros?.PesoAPEX || 35),
+            aaut: Number(payload.parametros?.PesoAAUT || 30),
+            periodo: payload.parametros?.PeriodoActual || "2025-2026 / Periodo 1",
+          };
+          STATE.selectedRA = [];
+          STATE.init = true;
+          return true;
+        } catch (error) {
+          window.lastSqlError = error?.message || "Error desconocido";
+          console.warn("No se pudo cargar SQL API, usando datos locales.", error);
+          return false;
+        }
+      }
+
       async function initFirebase() {
         document.getElementById("fullScreenLoading").classList.remove("hidden");
 
@@ -1500,7 +1633,18 @@
           console.warn(
             "⚠️ Ejecutando en Modo Local. No se detectó configuración de Firebase.",
           );
-          await seedDefaultData(); // Carga las 40 materias y los 5 RA
+          updateConnectionBanner("info", "Verificando conexión con SQL Server...");
+          const sqlHealth = await checkSqlHealth();
+          const loadedFromSql = await loadDataFromSqlApi();
+          if (!loadedFromSql) {
+            await seedDefaultData();
+            updateConnectionBanner(
+              "warning",
+              `Sin conexión SQL: ${sqlHealth.message}. Se usan datos locales. Detalle: ${window.lastSqlError || "sin detalle"}`,
+            );
+          } else {
+            updateConnectionBanner("success", "Conectado a SQL Server. Datos cargados correctamente.");
+          }
           document.getElementById("fullScreenLoading").classList.add("hidden");
           return; // Detiene la inicialización en la nube
         }
@@ -1527,7 +1671,14 @@
           });
         } catch (e) {
           console.error("Firebase no se pudo conectar:", e);
-          await seedDefaultData();
+          updateConnectionBanner("warning", "Firebase no disponible. Intentando con SQL Server...");
+          const loadedFromSql = await loadDataFromSqlApi();
+          if (!loadedFromSql) {
+            await seedDefaultData();
+            updateConnectionBanner("error", `No se pudo conectar ni a Firebase ni a SQL Server: ${window.lastSqlError || "sin detalle"}`);
+          } else {
+            updateConnectionBanner("success", "Conectado a SQL Server (Firebase no disponible).");
+          }
           document.getElementById("fullScreenLoading").classList.add("hidden");
         }
       }
@@ -1739,16 +1890,18 @@
           estudiantes: [
             {
               id: 1,
+              cedula: "2200278394",
               name: "ALCIVAR NOA JOHN EDUARDO",
               grades: { "IT-020": { acd: 8.6, apex: 8.6, aaut: 8.6 } },
             },
             {
               id: 2,
+              cedula: "2200323513",
               name: "MARLYN DAYSI ALVAREZ GUAMAN",
               grades: { "IT-020": { acd: 7.0, apex: 8.5, aaut: 8.0 } },
             },
-            { id: 3, name: "HEREDIA ANGULO KEVIN RAUL", grades: {} },
-            { id: 4, name: "JARAMILLO ALCIVAR BRANDON JAHIR", grades: {} },
+            { id: 3, cedula: "0803227693", name: "HEREDIA ANGULO KEVIN RAUL", grades: {} },
+            { id: 4, cedula: "2250074644", name: "JARAMILLO ALCIVAR BRANDON JAHIR", grades: {} },
           ],
           parametros: { notaMinima: 7, acd: 35, apex: 35, aaut: 30 },
           selectedRA: [],
@@ -2120,8 +2273,49 @@
           loadCalifData();
         }
       };
-      window.saveCalificaciones = function () {
-        showToast("Calificaciones guardadas exitosamente.");
+      window.saveCalificaciones = async function () {
+        try {
+          const asigCode = document.getElementById("califAsignatura").value;
+          if (!asigCode) {
+            showToast("Seleccione una asignatura antes de guardar.");
+            return;
+          }
+
+          const estudiantes = DB.get("estudiantes") || [];
+          const notas = estudiantes.map((e) => ({
+            cedula: e.cedula,
+            acd: e.grades?.[asigCode]?.acd || 0,
+            apex: e.grades?.[asigCode]?.apex || 0,
+            aaut: e.grades?.[asigCode]?.aaut || 0,
+          }));
+
+          const periodo = DB.get("parametros")?.periodo || "2025-2026 / Periodo 1";
+          const response = await fetch("http://localhost:3000/api/calificaciones/bulk", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              asignaturaCode: asigCode,
+              periodoAcademico: periodo,
+              notas,
+            }),
+          });
+
+          if (!response.ok) {
+            const err = await response.json();
+            throw new Error(err.detalle || err.error || "No se pudo guardar en SQL Server");
+          }
+
+          if (typeof window.updateConnectionBanner === "function") {
+            window.updateConnectionBanner("success", "Guardado correcto en SQL Server.");
+          }
+          showToast("Calificaciones guardadas exitosamente en SQL Server.");
+        } catch (error) {
+          console.error(error);
+          if (typeof window.updateConnectionBanner === "function") {
+            window.updateConnectionBanner("error", `Error al guardar en SQL Server: ${error.message}`);
+          }
+          showToast("Error al guardar en BD. Revise backend/conexión.");
+        }
       };
 
       // EXTRACCIÓN PDF
@@ -2375,13 +2569,25 @@
       window.closeModal = function (id) {
         document.getElementById(id).classList.remove("show");
       };
-      window.showToast = function (msg) {
+      window.showToast = function (msg, type = "info") {
+        const toast = document.getElementById("toast");
+        const icon = toast.querySelector("i");
+        toast.style.background =
+          type === "error"
+            ? "var(--accent)"
+            : type === "success"
+              ? "var(--success)"
+              : "var(--primary)";
+        icon.className =
+          type === "error"
+            ? "fas fa-times-circle"
+            : type === "success"
+              ? "fas fa-check-circle"
+              : "fas fa-info-circle";
+
         document.getElementById("toastText").textContent = msg;
-        document.getElementById("toast").classList.add("show");
-        setTimeout(
-          () => document.getElementById("toast").classList.remove("show"),
-          3000,
-        );
+        toast.classList.add("show");
+        setTimeout(() => toast.classList.remove("show"), 3500);
       };
     </script>
   </body>
