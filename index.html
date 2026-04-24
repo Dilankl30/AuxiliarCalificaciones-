@@ -1490,11 +1490,23 @@
           const response = await fetch(`${API_BASE_URL}/api/health`);
           const payload = await response.json();
           if (!response.ok || !payload.ok) {
-            throw new Error(payload.error || "SQL Server no respondió correctamente");
+            if (payload?.error?.includes("Tabla no válida")) {
+              throw new Error("Backend antiguo detectado en puerto 3000. Reinicia con el server.js actualizado.");
+            }
+            throw new Error(payload.detalle || payload.error || "SQL Server no respondió correctamente");
           }
           return { ok: true, message: payload.message };
         } catch (error) {
           return { ok: false, message: error.message };
+        }
+      }
+
+      async function safeJson(response) {
+        const raw = await response.text();
+        try {
+          return JSON.parse(raw);
+        } catch (_e) {
+          return { error: raw || `HTTP ${response.status}` };
         }
       }
 
@@ -1539,8 +1551,11 @@
       async function loadDataFromSqlApi() {
         try {
           const response = await fetch(`${API_BASE_URL}/api/bootstrap`);
-          const payload = await response.json();
+          const payload = await safeJson(response);
           if (!response.ok) {
+            if (payload?.error?.includes("Tabla no válida")) {
+              throw new Error("Backend antiguo detectado. Detén procesos Node y ejecuta: cd conexionsql && npm start");
+            }
             throw new Error(payload.detalle || payload.error || "Error cargando bootstrap SQL");
           }
           const asignaturaById = new Map(
@@ -1634,6 +1649,15 @@
             "⚠️ Ejecutando en Modo Local. No se detectó configuración de Firebase.",
           );
           updateConnectionBanner("info", "Verificando conexión con SQL Server...");
+          try {
+            const infoRes = await fetch(`${API_BASE_URL}/api/app-info`);
+            if (infoRes.ok) {
+              const info = await safeJson(infoRes);
+              console.log("API detectada:", info);
+            }
+          } catch (_e) {
+            // silencioso; el health reportará detalle
+          }
           const sqlHealth = await checkSqlHealth();
           const loadedFromSql = await loadDataFromSqlApi();
           if (!loadedFromSql) {
@@ -2301,7 +2325,7 @@
           });
 
           if (!response.ok) {
-            const err = await response.json();
+            const err = await safeJson(response);
             throw new Error(err.detalle || err.error || "No se pudo guardar en SQL Server");
           }
 
