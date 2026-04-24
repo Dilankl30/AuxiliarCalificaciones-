@@ -25,6 +25,16 @@ function getPool() {
   return poolPromise;
 }
 
+
+app.get('/api/app-info', (_req, res) => {
+  res.json({
+    ok: true,
+    app: 'AuxiliarCalificaciones SQL API',
+    version: '2.0.0',
+    routes: ['/api/health', '/api/bootstrap', '/api/calificaciones/bulk'],
+  });
+});
+
 app.get('/api/health', async (_req, res) => {
   try {
     const pool = await getPool();
@@ -138,7 +148,15 @@ app.post('/api/calificaciones/bulk', async (req, res) => {
   }
 });
 
+app.get('/api/:table', (_req, res) => {
+  res.status(410).json({
+    error: 'Endpoint legacy removido',
+    detalle: 'Usa /api/bootstrap o los endpoints nuevos. Reinicia el backend con el archivo server.js actualizado.',
+  });
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`API SQL corriendo en http://localhost:${PORT}`);
+  console.log('Rutas: GET /api/app-info, GET /api/health, GET /api/bootstrap, POST /api/calificaciones/bulk');
 });
