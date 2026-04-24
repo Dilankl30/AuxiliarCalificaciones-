@@ -553,6 +553,26 @@
         animation: slideUp 0.3s ease;
       }
 
+      .connection-banner {
+        position: fixed;
+        top: 12px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 2500;
+        min-width: 320px;
+        max-width: 90vw;
+        padding: 10px 14px;
+        border-radius: 10px;
+        color: white;
+        font-size: 13px;
+        font-weight: 600;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+      }
+      .connection-banner.info { background: #2563eb; }
+      .connection-banner.success { background: #16a34a; }
+      .connection-banner.warning { background: #d97706; }
+      .connection-banner.error { background: #dc2626; }
+
       .grid-2 {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -634,6 +654,8 @@
         Iniciando Entorno...
       </h3>
     </div>
+
+    <div id="connectionBanner" class="connection-banner info hidden"></div>
 
     <!-- LOGIN PAGE -->
     <div id="loginPage" class="login-container">
@@ -1451,6 +1473,30 @@
 
       let app, auth, db;
       let currentUserAuth = null;
+      const API_BASE_URL = "http://localhost:3000";
+
+      function updateConnectionBanner(type, message) {
+        const el = document.getElementById("connectionBanner");
+        if (!el) return;
+        el.className = `connection-banner ${type}`;
+        el.textContent = message;
+        el.classList.remove("hidden");
+      }
+
+      window.updateConnectionBanner = updateConnectionBanner;
+
+      async function checkSqlHealth() {
+        try {
+          const response = await fetch(`${API_BASE_URL}/api/health`);
+          const payload = await response.json();
+          if (!response.ok || !payload.ok) {
+            throw new Error(payload.error || "SQL Server no respondió correctamente");
+          }
+          return { ok: true, message: payload.message };
+        } catch (error) {
+          return { ok: false, message: error.message };
+        }
+      }
 
       // STATE GLOBAL
       const STATE = {
@@ -1492,10 +1538,11 @@
 
       async function loadDataFromSqlApi() {
         try {
-          const response = await fetch("http://localhost:3000/api/bootstrap");
-          if (!response.ok) return false;
-
+          const response = await fetch(`${API_BASE_URL}/api/bootstrap`);
           const payload = await response.json();
+          if (!response.ok) {
+            throw new Error(payload.detalle || payload.error || "Error cargando bootstrap SQL");
+          }
           const asignaturaById = new Map(
             (payload.asignaturas || []).map((a) => [a.AsignaturaID, a.CodigoAsignatura]),
           );
@@ -1570,6 +1617,7 @@
           STATE.init = true;
           return true;
         } catch (error) {
+          window.lastSqlError = error?.message || "Error desconocido";
           console.warn("No se pudo cargar SQL API, usando datos locales.", error);
           return false;
         }
@@ -1585,8 +1633,18 @@
           console.warn(
             "⚠️ Ejecutando en Modo Local. No se detectó configuración de Firebase.",
           );
+          updateConnectionBanner("info", "Verificando conexión con SQL Server...");
+          const sqlHealth = await checkSqlHealth();
           const loadedFromSql = await loadDataFromSqlApi();
-          if (!loadedFromSql) await seedDefaultData();
+          if (!loadedFromSql) {
+            await seedDefaultData();
+            updateConnectionBanner(
+              "warning",
+              `Sin conexión SQL: ${sqlHealth.message}. Se usan datos locales. Detalle: ${window.lastSqlError || "sin detalle"}`,
+            );
+          } else {
+            updateConnectionBanner("success", "Conectado a SQL Server. Datos cargados correctamente.");
+          }
           document.getElementById("fullScreenLoading").classList.add("hidden");
           return; // Detiene la inicialización en la nube
         }
@@ -1613,8 +1671,14 @@
           });
         } catch (e) {
           console.error("Firebase no se pudo conectar:", e);
+          updateConnectionBanner("warning", "Firebase no disponible. Intentando con SQL Server...");
           const loadedFromSql = await loadDataFromSqlApi();
-          if (!loadedFromSql) await seedDefaultData();
+          if (!loadedFromSql) {
+            await seedDefaultData();
+            updateConnectionBanner("error", `No se pudo conectar ni a Firebase ni a SQL Server: ${window.lastSqlError || "sin detalle"}`);
+          } else {
+            updateConnectionBanner("success", "Conectado a SQL Server (Firebase no disponible).");
+          }
           document.getElementById("fullScreenLoading").classList.add("hidden");
         }
       }
@@ -2238,12 +2302,18 @@
 
           if (!response.ok) {
             const err = await response.json();
-            throw new Error(err.error || "No se pudo guardar en SQL Server");
+            throw new Error(err.detalle || err.error || "No se pudo guardar en SQL Server");
           }
 
+          if (typeof window.updateConnectionBanner === "function") {
+            window.updateConnectionBanner("success", "Guardado correcto en SQL Server.");
+          }
           showToast("Calificaciones guardadas exitosamente en SQL Server.");
         } catch (error) {
           console.error(error);
+          if (typeof window.updateConnectionBanner === "function") {
+            window.updateConnectionBanner("error", `Error al guardar en SQL Server: ${error.message}`);
+          }
           showToast("Error al guardar en BD. Revise backend/conexión.");
         }
       };
@@ -2499,13 +2569,25 @@
       window.closeModal = function (id) {
         document.getElementById(id).classList.remove("show");
       };
-      window.showToast = function (msg) {
+      window.showToast = function (msg, type = "info") {
+        const toast = document.getElementById("toast");
+        const icon = toast.querySelector("i");
+        toast.style.background =
+          type === "error"
+            ? "var(--accent)"
+            : type === "success"
+              ? "var(--success)"
+              : "var(--primary)";
+        icon.className =
+          type === "error"
+            ? "fas fa-times-circle"
+            : type === "success"
+              ? "fas fa-check-circle"
+              : "fas fa-info-circle";
+
         document.getElementById("toastText").textContent = msg;
-        document.getElementById("toast").classList.add("show");
-        setTimeout(
-          () => document.getElementById("toast").classList.remove("show"),
-          3000,
-        );
+        toast.classList.add("show");
+        setTimeout(() => toast.classList.remove("show"), 3500);
       };
     </script>
   </body>
